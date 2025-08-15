@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -47,7 +46,7 @@ type ssoTeammateModel struct {
 	LastName  types.String `tfsdk:"last_name"`
 
 	HasRestricted types.Bool   `tfsdk:"has_restricted_subuser_access"`
-	SubuserAccess types.List   `tfsdk:"subuser_access"`
+	SubuserAccess types.Set    `tfsdk:"subuser_access"`
 	Status        types.String `tfsdk:"status"`
 }
 
@@ -107,10 +106,10 @@ func (r *SSOTeammateResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 		},
 		Blocks: map[string]schema.Block{
-			"subuser_access": schema.ListNestedBlock{
+			"subuser_access": schema.SetNestedBlock{
 				MarkdownDescription: "Per‑Subuser access when `has_restricted_subuser_access = true`. For `permission_type = restricted`, `scopes` must list allowed scopes.",
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.UseStateForUnknown(),
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
 				},
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
@@ -343,16 +342,16 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 			}
 			objs = append(objs, o)
 		}
-		lv, diags := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
+		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		plan.SubuserAccess = lv
+		plan.SubuserAccess = sv
 	} else {
-		plan.SubuserAccess = types.ListNull(types.ObjectType{AttrTypes: map[string]attr.Type{
+		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}
@@ -485,16 +484,16 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 			objs = append(objs, o)
 		}
 		// assign to state.SubuserAccess
-		lv, diags := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
+		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		state.SubuserAccess = lv
+		state.SubuserAccess = sv
 	} else {
-		state.SubuserAccess = types.ListNull(types.ObjectType{AttrTypes: map[string]attr.Type{
+		state.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}
@@ -654,16 +653,16 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 			}
 			objs = append(objs, o)
 		}
-		lv, diags := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
+		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		plan.SubuserAccess = lv
+		plan.SubuserAccess = sv
 	} else {
-		plan.SubuserAccess = types.ListNull(types.ObjectType{AttrTypes: map[string]attr.Type{
+		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
 			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}

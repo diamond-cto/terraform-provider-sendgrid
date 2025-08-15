@@ -24,7 +24,7 @@ Manage a Twilio SendGrid SSO Teammate and optional per‑Subuser restricted acce
 
 - `first_name` (String) Teammate first name.
 - `last_name` (String) Teammate last name.
-- `subuser_access` (Block List) Per‑Subuser access when `has_restricted_subuser_access = true`. For `permission_type = restricted`, `scopes` must list allowed scopes. (see [below for nested schema](#nestedblock--subuser_access))
+- `subuser_access` (Block Set) Per‑Subuser access when `has_restricted_subuser_access = true`. For `permission_type = restricted`, `scopes` must list allowed scopes. (see [below for nested schema](#nestedblock--subuser_access))
 
 ### Read-Only
 
