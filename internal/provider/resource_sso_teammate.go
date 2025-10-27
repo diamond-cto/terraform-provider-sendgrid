@@ -51,7 +51,7 @@ type ssoTeammateModel struct {
 }
 
 type subuserAccessObject struct {
-	ID             types.Int64  `tfsdk:"id"`
+	ID             types.String `tfsdk:"id"`
 	PermissionType types.String `tfsdk:"permission_type"`
 	Scopes         types.Set    `tfsdk:"scopes"`
 }
@@ -113,7 +113,7 @@ func (r *SSOTeammateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				},
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
-						"id": schema.Int64Attribute{
+						"id": schema.StringAttribute{
 							Required:            true,
 							MarkdownDescription: "Subuser ID.",
 						},
@@ -220,8 +220,14 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 			return
 		}
 		for _, o := range objs {
+			// Convert String ID to int64 for API
+			idInt, err := strconv.ParseInt(o.ID.ValueString(), 10, 64)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid subuser ID", fmt.Sprintf("subuser_access.id must be a valid integer: %v", err))
+				return
+			}
 			entry := subuserAccessEntry{
-				ID:             o.ID.ValueInt64(),
+				ID:             idInt,
 				PermissionType: o.PermissionType.ValueString(),
 			}
 			if !o.Scopes.IsNull() && !o.Scopes.IsUnknown() {
@@ -330,7 +336,8 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 	if len(allEntries) > 0 {
 		objs := make([]subuserAccessObject, 0, len(allEntries))
 		for _, e := range allEntries {
-			o := subuserAccessObject{ID: types.Int64Value(e.ID), PermissionType: types.StringValue(e.PermissionType)}
+			// Convert int64 ID to String for Terraform state
+			o := subuserAccessObject{ID: types.StringValue(strconv.FormatInt(e.ID, 10)), PermissionType: types.StringValue(e.PermissionType)}
 			if len(e.Scopes) > 0 {
 				setVals := make([]attr.Value, 0, len(e.Scopes))
 				for _, s := range e.Scopes {
@@ -343,7 +350,7 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 			objs = append(objs, o)
 		}
 		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -352,7 +359,7 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 		plan.SubuserAccess = sv
 	} else {
 		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}
 	plan.ID = types.StringValue(plan.Email.ValueString())
@@ -468,7 +475,7 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 		objs := make([]subuserAccessObject, 0, len(allEntries))
 		for _, e := range allEntries {
 			o := subuserAccessObject{
-				ID:             types.Int64Value(e.ID),
+				ID:             types.StringValue(strconv.FormatInt(e.ID, 10)),
 				PermissionType: types.StringValue(e.PermissionType),
 			}
 			// scopes -> types.Set
@@ -485,7 +492,7 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 		}
 		// assign to state.SubuserAccess
 		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -494,7 +501,7 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 		state.SubuserAccess = sv
 	} else {
 		state.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}
 
@@ -539,7 +546,13 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 			return
 		}
 		for _, o := range objs {
-			entry := subuserAccessEntry{ID: o.ID.ValueInt64(), PermissionType: o.PermissionType.ValueString()}
+			// Convert String ID to int64 for API
+			idInt, err := strconv.ParseInt(o.ID.ValueString(), 10, 64)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid subuser ID", fmt.Sprintf("subuser_access.id must be a valid integer: %v", err))
+				return
+			}
+			entry := subuserAccessEntry{ID: idInt, PermissionType: o.PermissionType.ValueString()}
 			if !o.Scopes.IsNull() && !o.Scopes.IsUnknown() {
 				var scopes []string
 				resp.Diagnostics.Append(o.Scopes.ElementsAs(ctx, &scopes, false)...)
@@ -641,7 +654,8 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 	if len(allEntries) > 0 {
 		objs := make([]subuserAccessObject, 0, len(allEntries))
 		for _, e := range allEntries {
-			o := subuserAccessObject{ID: types.Int64Value(e.ID), PermissionType: types.StringValue(e.PermissionType)}
+			// Convert int64 ID to String for Terraform state
+			o := subuserAccessObject{ID: types.StringValue(strconv.FormatInt(e.ID, 10)), PermissionType: types.StringValue(e.PermissionType)}
 			if len(e.Scopes) > 0 {
 				setVals := make([]attr.Value, 0, len(e.Scopes))
 				for _, s := range e.Scopes {
@@ -654,7 +668,7 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 			objs = append(objs, o)
 		}
 		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}}, objs)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -663,7 +677,7 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 		plan.SubuserAccess = sv
 	} else {
 		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.Int64Type, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
+			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
 		}})
 	}
 	plan.ID = types.StringValue(plan.Email.ValueString())

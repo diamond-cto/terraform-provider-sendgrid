@@ -29,7 +29,7 @@ func buildResourceConfig(email, firstName, lastName string, subuserID string) st
 	}
 	cfg += "  has_restricted_subuser_access = true\n"
 	cfg += "  subuser_access {\n"
-	cfg += "    id              = " + subuserID + "\n"
+	cfg += "    id              = \"" + subuserID + "\"\n"
 	cfg += "    permission_type = \"restricted\"\n"
 	cfg += "    scopes = [\n"
 	cfg += "      \"mail_settings.read\",\n"
@@ -46,6 +46,46 @@ func buildResourceConfig(email, firstName, lastName string, subuserID string) st
 	cfg += "      \"user.username.read\",\n"
 	cfg += "    ]\n"
 	cfg += "  }\n"
+	cfg += "}\n"
+	return cfg
+}
+
+// buildResourceConfigMultipleSubusers returns an HCL config for sendgrid_sso_teammate with multiple subuser_access entries.
+func buildResourceConfigMultipleSubusers(email, firstName, lastName string, subuserIDs []string) string {
+	cfg := "provider \"sendgrid\" {}\n\n"
+	cfg += "resource \"sendgrid_sso_teammate\" \"test\" {\n"
+	cfg += "  email      = \"" + email + "\"\n"
+	if firstName != "" {
+		cfg += "  first_name = \"" + firstName + "\"\n"
+	}
+	if lastName != "" {
+		cfg += "  last_name  = \"" + lastName + "\"\n"
+	}
+	cfg += "  has_restricted_subuser_access = true\n"
+
+	// Add multiple subuser_access blocks
+	for i, subuserID := range subuserIDs {
+		cfg += "  subuser_access {\n"
+		cfg += "    id              = \"" + subuserID + "\"\n"
+		cfg += "    permission_type = \"restricted\"\n"
+		cfg += "    scopes = [\n"
+		// Use different scopes for each subuser to verify proper state handling
+		if i == 0 {
+			cfg += "      \"mail_settings.read\",\n"
+			cfg += "      \"messages.read\",\n"
+			cfg += "      \"user.account.read\",\n"
+		} else if i == 1 {
+			cfg += "      \"stats.read\",\n"
+			cfg += "      \"tracking_settings.read\",\n"
+			cfg += "      \"user.profile.read\",\n"
+		} else {
+			cfg += "      \"partner_settings.read\",\n"
+			cfg += "      \"user.credits.read\",\n"
+			cfg += "      \"user.email.read\",\n"
+		}
+		cfg += "    ]\n"
+		cfg += "  }\n"
+	}
 	cfg += "}\n"
 	return cfg
 }
@@ -213,6 +253,81 @@ func TestAccResourceSSOTeammate_CRUD_Import(t *testing.T) {
 			{
 				Destroy: true,
 				Config:  cfgUpdate,
+			},
+		},
+	})
+}
+
+// TestAccResourceSSOTeammate_MultipleSubusers tests handling of multiple subuser_access entries
+// to verify that the Set schema correctly handles multiple elements without order-only diffs.
+func TestAccResourceSSOTeammate_MultipleSubusers(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC not set; skipping acceptance test")
+	}
+	if os.Getenv("SENDGRID_API_KEY") == "" {
+		t.Skip("SENDGRID_API_KEY not set; skipping acceptance test")
+	}
+
+	rSuffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	email := fmt.Sprintf("terraform-acctest-multi-%s@example.com", rSuffix)
+
+	// Get subuser IDs from environment
+	subID1 := os.Getenv("TEST_SUBUSER_ID_1")
+	subID2 := os.Getenv("TEST_SUBUSER_ID_2")
+
+	// If multiple subuser IDs not set, skip this test
+	if subID1 == "" || subID2 == "" {
+		t.Skip("TEST_SUBUSER_ID_1 and TEST_SUBUSER_ID_2 not set; skipping TestAccResourceSSOTeammate_MultipleSubusers")
+	}
+
+	subuserIDs := []string{subID1, subID2}
+	cfgCreate := buildResourceConfigMultipleSubusers(email, "Terraform", "MultiTest", subuserIDs)
+
+	// Create config with same subusers in different order to test Set behavior
+	subuserIDsReversed := []string{subID2, subID1}
+	cfgReordered := buildResourceConfigMultipleSubusers(email, "Terraform", "MultiTest", subuserIDsReversed)
+
+	resourceName := "sendgrid_sso_teammate.test"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"sendgrid": providerserver.NewProtocol6WithError(prov.New()),
+		},
+		CheckDestroy: testAccCheckSSOTeammateDestroy(t),
+		Steps: []resource.TestStep{
+			// CREATE with multiple subusers
+			{
+				Config: cfgCreate,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(resourceName, "email", email),
+					resource.TestMatchResourceAttr(resourceName, "status", regexp.MustCompile(`^(|active|pending)$`)),
+					// Verify we have at least 2 subuser_access entries
+					checkListLenGE(resourceName, "subuser_access", 2, t),
+					// Verify each subuser exists with correct permission_type
+					checkSubuserHasPermissionAndScope(resourceName, subID1, "restricted", "mail_settings.read", t),
+					checkSubuserHasPermissionAndScope(resourceName, subID2, "restricted", "stats.read", t),
+				),
+			},
+			// PLAN-ONLY with reordered subusers: should produce no diff due to Set schema
+			{
+				Config:             cfgReordered,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false, // Expecting no changes because Sets ignore order
+			},
+			// IMPORT & VERIFY
+			{
+				ResourceName:                         resourceName,
+				ImportState:                          true,
+				ImportStateVerify:                    true,
+				ImportStateId:                        email,
+				ImportStateVerifyIdentifierAttribute: "email",
+			},
+			// DESTROY
+			{
+				Destroy: true,
+				Config:  cfgReordered,
 			},
 		},
 	})
