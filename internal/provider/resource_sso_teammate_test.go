@@ -70,15 +70,16 @@ func buildResourceConfigMultipleSubusers(email, firstName, lastName string, subu
 		cfg += "    permission_type = \"restricted\"\n"
 		cfg += "    scopes = [\n"
 		// Use different scopes for each subuser to verify proper state handling
-		if i == 0 {
+		switch i {
+		case 0:
 			cfg += "      \"mail_settings.read\",\n"
 			cfg += "      \"messages.read\",\n"
 			cfg += "      \"user.account.read\",\n"
-		} else if i == 1 {
+		case 1:
 			cfg += "      \"stats.read\",\n"
 			cfg += "      \"tracking_settings.read\",\n"
 			cfg += "      \"user.profile.read\",\n"
-		} else {
+		default:
 			cfg += "      \"partner_settings.read\",\n"
 			cfg += "      \"user.credits.read\",\n"
 			cfg += "      \"user.email.read\",\n"
