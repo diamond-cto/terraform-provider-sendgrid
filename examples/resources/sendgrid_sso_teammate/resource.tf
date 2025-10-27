@@ -20,7 +20,7 @@ resource "sendgrid_sso_teammate" "readonly" {
 
   # Access settings for each assigned Subuser
   subuser_access {
-    id              = 1234567      # ← Replace with the ID of an existing Subuser
+    id              = "1234567"    # ← Replace with the ID of an existing Subuser (as string)
     permission_type = "restricted" # "restricted" | "admin"
     scopes = [                     # For "restricted", list the allowed scopes
       "messages.read",
@@ -41,7 +41,7 @@ resource "sendgrid_sso_teammate" "ops" {
   has_restricted_subuser_access = true
 
   subuser_access {
-    id              = 1111111
+    id              = "1111111"
     permission_type = "restricted"
     scopes = [
       "messages.read",
@@ -50,7 +50,7 @@ resource "sendgrid_sso_teammate" "ops" {
   }
 
   subuser_access {
-    id              = 2222222
+    id              = "2222222"
     permission_type = "admin" # For "admin", scopes are ignored
     scopes          = []
   }
