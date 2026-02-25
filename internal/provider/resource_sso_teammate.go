@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -21,16 +22,21 @@ import (
 
 // NOTE: This resource manages SSO Teammates via POST/PATCH /v3/sso/teammates and
 // reads/deletes via GET/DELETE /v3/teammates/{username}.
-// See:
-// - Create: POST /v3/sso/teammates
-// - Edit:   PATCH /v3/sso/teammates/{username}
-// - Read:   GET   /v3/teammates/{username}
-// - Delete: DELETE /v3/teammates/{username}
-// Docs:
-// https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/create-sso-teammate
-// https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/edit-an-sso-teammate
-// https://www.twilio.com/docs/sendgrid/api-reference/teammates/retrieve-specific-teammate
-// https://www.twilio.com/docs/sendgrid/api-reference/teammates/delete-teammate
+//
+// API Endpoints:
+//   - Create: POST   /v3/sso/teammates
+//   - Edit:   PATCH  /v3/sso/teammates/{username}
+//   - Read:   GET    /v3/teammates/{username}
+//   - Delete: DELETE /v3/teammates/{username}
+//   - Subuser Access: GET /v3/teammates/{username}/subuser_access (paginated)
+//
+// API Documentation:
+//   - Create SSO Teammate:       https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/create-sso-teammate
+//   - Edit SSO Teammate:         https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/edit-an-sso-teammate
+//   - Retrieve Specific Teammate: https://www.twilio.com/docs/sendgrid/api-reference/teammates/retrieve-specific-teammate
+//   - Delete Teammate:           https://www.twilio.com/docs/sendgrid/api-reference/teammates/delete-teammate
+//   - Teammate Subuser Access:   https://www.twilio.com/docs/sendgrid/api-reference/teammates/retrieve-teammate-subuser-access
+//   - Teammate Permissions:      https://www.twilio.com/docs/sendgrid/ui/account-and-settings/teammate-permissions
 
 var _ resource.Resource = (*SSOTeammateResource)(nil)
 var _ resource.ResourceWithConfigure = (*SSOTeammateResource)(nil)
@@ -44,6 +50,8 @@ type ssoTeammateModel struct {
 	Email     types.String `tfsdk:"email"`
 	FirstName types.String `tfsdk:"first_name"`
 	LastName  types.String `tfsdk:"last_name"`
+	IsAdmin   types.Bool   `tfsdk:"is_admin"`
+	Scopes    types.Set    `tfsdk:"scopes"`
 
 	HasRestricted types.Bool   `tfsdk:"has_restricted_subuser_access"`
 	SubuserAccess types.Set    `tfsdk:"subuser_access"`
@@ -96,6 +104,17 @@ func (r *SSOTeammateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				Optional:            true,
 				MarkdownDescription: "Teammate last name.",
 			},
+			"is_admin": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Set true to grant full admin access to the main account. When true, `scopes` is ignored.",
+			},
+			"scopes": schema.SetAttribute{
+				ElementType:         types.StringType,
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Main account permission scopes. Only effective when `is_admin = false`. Ignored when `is_admin = true`.",
+			},
 			"has_restricted_subuser_access": schema.BoolAttribute{
 				Required:            true,
 				MarkdownDescription: "Set true to configure per‑Subuser permissions with `subuser_access`.",
@@ -145,6 +164,8 @@ type ssoCreatePayload struct {
 	Email     string `json:"email"`
 	FirstName string `json:"first_name,omitempty"`
 	LastName  string `json:"last_name,omitempty"`
+	IsAdmin   bool   `json:"is_admin"`
+	Scopes    []string `json:"scopes,omitempty"`
 
 	HasRestricted bool                 `json:"has_restricted_subuser_access"`
 	SubuserAccess []subuserAccessEntry `json:"subuser_access,omitempty"`
@@ -153,6 +174,8 @@ type ssoCreatePayload struct {
 type ssoPatchPayload struct {
 	FirstName *string `json:"first_name,omitempty"`
 	LastName  *string `json:"last_name,omitempty"`
+	IsAdmin   *bool   `json:"is_admin,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
 
 	HasRestricted *bool                `json:"has_restricted_subuser_access,omitempty"`
 	SubuserAccess []subuserAccessEntry `json:"subuser_access,omitempty"`
@@ -165,11 +188,13 @@ type subuserAccessEntry struct {
 }
 
 type teammateGetResponse struct {
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	Status    string `json:"status"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
+	Username  string   `json:"username"`
+	Email     string   `json:"email"`
+	Status    string   `json:"status"`
+	FirstName string   `json:"first_name"`
+	LastName  string   `json:"last_name"`
+	IsAdmin   bool     `json:"is_admin"`
+	Scopes    []string `json:"scopes"`
 }
 
 type teammateSubuserAccessResponse struct {
@@ -193,6 +218,9 @@ type teammateSubuserAccessResponse struct {
 
 // ---------- CRUD ----------
 
+// Create creates an SSO Teammate.
+// POST /v3/sso/teammates
+// https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/create-sso-teammate
 func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("Not configured", "Provider configuration is missing")
@@ -209,7 +237,18 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 		Email:         plan.Email.ValueString(),
 		FirstName:     plan.FirstName.ValueString(),
 		LastName:      plan.LastName.ValueString(),
+		IsAdmin:       plan.IsAdmin.ValueBool(),
 		HasRestricted: plan.HasRestricted.ValueBool(),
+	}
+
+	// Build main-account scopes
+	if !plan.Scopes.IsNull() && !plan.Scopes.IsUnknown() {
+		var scopes []string
+		resp.Diagnostics.Append(plan.Scopes.ElementsAs(ctx, &scopes, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		payload.Scopes = scopes
 	}
 
 	// Build subuser_access
@@ -279,48 +318,7 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	// GET /v3/teammates/{username}/subuser_access with pagination
-	var allEntries []subuserAccessEntry
-	var hasRestricted bool
-	var afterID int64 = 0
-	for {
-		tflog.Debug(ctx, "Post-create GET /v3/teammates/{username}/subuser_access", map[string]any{"username": username, "after_subuser_id": afterID})
-		reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
-		reqSA.Method = "GET"
-		if reqSA.QueryParams == nil {
-			reqSA.QueryParams = make(map[string]string)
-		}
-		reqSA.QueryParams["limit"] = "100"
-		if afterID > 0 {
-			reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
-		}
-
-		saResp, err := sendgrid.API(reqSA)
-		if err != nil {
-			resp.Diagnostics.AddError("SendGrid API error (post-create subuser_access)", err.Error())
-			return
-		}
-		if saResp.StatusCode >= 300 {
-			resp.Diagnostics.AddError("Post-create subuser_access read failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
-			return
-		}
-		var sa teammateSubuserAccessResponse
-		if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
-			resp.Diagnostics.AddError("Parse error (post-create subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
-			return
-		}
-		hasRestricted = sa.HasRestrictedSubuserAccess
-		for _, e := range sa.SubuserAccess {
-			allEntries = append(allEntries, subuserAccessEntry{ID: e.ID, PermissionType: e.PermissionType, Scopes: e.Scopes})
-		}
-		if sa.Metadata.NextParams.AfterSubuserID == 0 {
-			break
-		}
-		afterID = sa.Metadata.NextParams.AfterSubuserID
-	}
-
 	// map to state model
-	// normalize names from API response
 	if got.FirstName != "" {
 		plan.FirstName = types.StringValue(got.FirstName)
 	} else {
@@ -332,40 +330,74 @@ func (r *SSOTeammateResource) Create(ctx context.Context, req resource.CreateReq
 		plan.LastName = types.StringNull()
 	}
 	plan.Status = types.StringValue(got.Status)
-	plan.HasRestricted = types.BoolValue(hasRestricted)
-	if len(allEntries) > 0 {
-		objs := make([]subuserAccessObject, 0, len(allEntries))
-		for _, e := range allEntries {
-			// Convert int64 ID to String for Terraform state
-			o := subuserAccessObject{ID: types.StringValue(strconv.FormatInt(e.ID, 10)), PermissionType: types.StringValue(e.PermissionType)}
-			if len(e.Scopes) > 0 {
-				setVals := make([]attr.Value, 0, len(e.Scopes))
-				for _, s := range e.Scopes {
-					setVals = append(setVals, types.StringValue(s))
-				}
-				o.Scopes, _ = types.SetValue(types.StringType, setVals)
-			} else {
-				o.Scopes = types.SetNull(types.StringType)
-			}
-			objs = append(objs, o)
+	plan.IsAdmin = types.BoolValue(got.IsAdmin)
+
+	if got.IsAdmin {
+		// Admin implies all scopes/subuser_access; skip pagination API call
+		// and preserve plan values to avoid perpetual diffs.
+		plan.HasRestricted = types.BoolValue(false)
+		if plan.Scopes.IsUnknown() {
+			plan.Scopes = scopesSliceToSet(nil)
 		}
-		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}}, objs)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.SubuserAccess = sv
 	} else {
-		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}})
+		plan.Scopes = scopesSliceToSet(got.Scopes)
+
+		// Fetch subuser access with pagination (only for non-admin)
+		var allEntries []subuserAccessEntry
+		var hasRestricted bool
+		var afterID int64 = 0
+		for {
+			tflog.Debug(ctx, "Post-create GET subuser_access", map[string]any{"username": username, "after_subuser_id": afterID})
+			reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
+			reqSA.Method = "GET"
+			if reqSA.QueryParams == nil {
+				reqSA.QueryParams = make(map[string]string)
+			}
+			reqSA.QueryParams["limit"] = "100"
+			if afterID > 0 {
+				reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
+			}
+			saResp, err := sendgrid.API(reqSA)
+			if err != nil {
+				resp.Diagnostics.AddError("SendGrid API error (post-create subuser_access)", err.Error())
+				return
+			}
+			if saResp.StatusCode >= 300 {
+				resp.Diagnostics.AddError("Post-create subuser_access read failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
+				return
+			}
+			var sa teammateSubuserAccessResponse
+			if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
+				resp.Diagnostics.AddError("Parse error (post-create subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
+				return
+			}
+			hasRestricted = sa.HasRestrictedSubuserAccess
+			for _, e := range sa.SubuserAccess {
+				allEntries = append(allEntries, subuserAccessEntry{ID: e.ID, PermissionType: e.PermissionType, Scopes: e.Scopes})
+			}
+			if sa.Metadata.NextParams.AfterSubuserID == 0 {
+				break
+			}
+			afterID = sa.Metadata.NextParams.AfterSubuserID
+		}
+		plan.HasRestricted = types.BoolValue(hasRestricted)
+		planHasSubuserAccess := !plan.SubuserAccess.IsNull() && !plan.SubuserAccess.IsUnknown() && len(plan.SubuserAccess.Elements()) > 0
+		if planHasSubuserAccess {
+			plan.SubuserAccess = subuserAccessEntriesToSet(ctx, allEntries, &resp.Diagnostics)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
 	}
 	plan.ID = types.StringValue(plan.Email.ValueString())
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// Read fetches the current state of an SSO Teammate.
+// GET /v3/teammates/{username}
+// https://www.twilio.com/docs/sendgrid/api-reference/teammates/retrieve-specific-teammate
+// GET /v3/teammates/{username}/subuser_access (paginated)
+// https://www.twilio.com/docs/sendgrid/api-reference/teammates/retrieve-teammate-subuser-access
 func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("Not configured", "Provider configuration is missing")
@@ -409,55 +441,9 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	// Fetch subuser access to fully populate state (useful for import and read-after-apply)
-	var allEntries []subuserAccessEntry
-	var hasRestricted bool
-	var afterID int64 = 0
-	for {
-		reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
-		reqSA.Method = "GET"
-		// page size hint (SendGrid may ignore, but set for clarity)
-		if reqSA.QueryParams == nil {
-			reqSA.QueryParams = make(map[string]string)
-		}
-		reqSA.QueryParams["limit"] = "100"
-		if afterID > 0 {
-			reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
-		}
-
-		saResp, err := sendgrid.API(reqSA)
-		if err != nil {
-			resp.Diagnostics.AddError("SendGrid API error (subuser_access)", err.Error())
-			return
-		}
-		if saResp.StatusCode >= 300 {
-			resp.Diagnostics.AddError("Read subuser access failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
-			return
-		}
-		var sa teammateSubuserAccessResponse
-		if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
-			resp.Diagnostics.AddError("Parse error (subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
-			return
-		}
-		hasRestricted = sa.HasRestrictedSubuserAccess
-		for _, e := range sa.SubuserAccess {
-			allEntries = append(allEntries, subuserAccessEntry{
-				ID:             e.ID,
-				PermissionType: e.PermissionType,
-				Scopes:         e.Scopes,
-			})
-		}
-		// pagination
-		if sa.Metadata.NextParams.AfterSubuserID == 0 {
-			break
-		}
-		afterID = sa.Metadata.NextParams.AfterSubuserID
-	}
-
 	// normalize identifiers from API response
 	state.Email = types.StringValue(got.Email)
 	state.ID = types.StringValue(got.Email)
-	// propagate names from API into state for import parity
 	if got.FirstName != "" {
 		state.FirstName = types.StringValue(got.FirstName)
 	} else {
@@ -468,47 +454,68 @@ func (r *SSOTeammateResource) Read(ctx context.Context, req resource.ReadRequest
 	} else {
 		state.LastName = types.StringNull()
 	}
-	// Map back to state fields
-	state.HasRestricted = types.BoolValue(hasRestricted)
-	// Convert entries to the ListNestedBlock model `[]subuserAccessObject`
-	if len(allEntries) > 0 {
-		objs := make([]subuserAccessObject, 0, len(allEntries))
-		for _, e := range allEntries {
-			o := subuserAccessObject{
-				ID:             types.StringValue(strconv.FormatInt(e.ID, 10)),
-				PermissionType: types.StringValue(e.PermissionType),
+	state.IsAdmin = types.BoolValue(got.IsAdmin)
+	state.Status = types.StringValue(got.Status)
+
+	if got.IsAdmin {
+		// Admin gets all scopes/subuser_access implicitly from API.
+		// Skip the subuser_access pagination call entirely and store empty values.
+		state.Scopes = scopesSliceToSet(nil)
+		state.HasRestricted = types.BoolValue(false)
+		state.SubuserAccess = types.SetNull(subuserAccessObjectType())
+	} else {
+		state.Scopes = scopesSliceToSet(got.Scopes)
+
+		// Fetch subuser access with pagination (only for non-admin)
+		var allEntries []subuserAccessEntry
+		var hasRestricted bool
+		var afterID int64 = 0
+		for {
+			reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
+			reqSA.Method = "GET"
+			if reqSA.QueryParams == nil {
+				reqSA.QueryParams = make(map[string]string)
 			}
-			// scopes -> types.Set
-			if len(e.Scopes) > 0 {
-				setVals := make([]attr.Value, 0, len(e.Scopes))
-				for _, s := range e.Scopes {
-					setVals = append(setVals, types.StringValue(s))
-				}
-				o.Scopes, _ = types.SetValue(types.StringType, setVals)
-			} else {
-				o.Scopes = types.SetNull(types.StringType)
+			reqSA.QueryParams["limit"] = "100"
+			if afterID > 0 {
+				reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
 			}
-			objs = append(objs, o)
+			saResp, err := sendgrid.API(reqSA)
+			if err != nil {
+				resp.Diagnostics.AddError("SendGrid API error (subuser_access)", err.Error())
+				return
+			}
+			if saResp.StatusCode >= 300 {
+				resp.Diagnostics.AddError("Read subuser access failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
+				return
+			}
+			var sa teammateSubuserAccessResponse
+			if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
+				resp.Diagnostics.AddError("Parse error (subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
+				return
+			}
+			hasRestricted = sa.HasRestrictedSubuserAccess
+			for _, e := range sa.SubuserAccess {
+				allEntries = append(allEntries, subuserAccessEntry{ID: e.ID, PermissionType: e.PermissionType, Scopes: e.Scopes})
+			}
+			if sa.Metadata.NextParams.AfterSubuserID == 0 {
+				break
+			}
+			afterID = sa.Metadata.NextParams.AfterSubuserID
 		}
-		// assign to state.SubuserAccess
-		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}}, objs)
-		resp.Diagnostics.Append(diags...)
+		state.HasRestricted = types.BoolValue(hasRestricted)
+		state.SubuserAccess = subuserAccessEntriesToSet(ctx, allEntries, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		state.SubuserAccess = sv
-	} else {
-		state.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}})
 	}
 
-	state.Status = types.StringValue(got.Status)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
+// Update patches an existing SSO Teammate.
+// PATCH /v3/sso/teammates/{username}
+// https://www.twilio.com/docs/sendgrid/api-reference/single-sign-on-teammates/edit-an-sso-teammate
 func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("Not configured", "Provider configuration is missing")
@@ -533,6 +540,18 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 	if !plan.LastName.IsNull() && !plan.LastName.IsUnknown() {
 		v := plan.LastName.ValueString()
 		patch.LastName = &v
+	}
+	if !plan.IsAdmin.IsNull() && !plan.IsAdmin.IsUnknown() {
+		v := plan.IsAdmin.ValueBool()
+		patch.IsAdmin = &v
+	}
+	if !plan.Scopes.IsNull() && !plan.Scopes.IsUnknown() {
+		var scopes []string
+		resp.Diagnostics.Append(plan.Scopes.ElementsAs(ctx, &scopes, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		patch.Scopes = scopes
 	}
 	if !plan.HasRestricted.IsNull() && !plan.HasRestricted.IsUnknown() {
 		v := plan.HasRestricted.ValueBool()
@@ -599,45 +618,6 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	var allEntries []subuserAccessEntry
-	var hasRestricted bool
-	var afterID int64 = 0
-	for {
-		tflog.Debug(ctx, "Post-update GET /v3/teammates/{username}/subuser_access", map[string]any{"username": username, "after_subuser_id": afterID})
-		reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
-		reqSA.Method = "GET"
-		if reqSA.QueryParams == nil {
-			reqSA.QueryParams = make(map[string]string)
-		}
-		reqSA.QueryParams["limit"] = "100"
-		if afterID > 0 {
-			reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
-		}
-
-		saResp, err := sendgrid.API(reqSA)
-		if err != nil {
-			resp.Diagnostics.AddError("SendGrid API error (post-update subuser_access)", err.Error())
-			return
-		}
-		if saResp.StatusCode >= 300 {
-			resp.Diagnostics.AddError("Post-update subuser_access read failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
-			return
-		}
-		var sa teammateSubuserAccessResponse
-		if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
-			resp.Diagnostics.AddError("Parse error (post-update subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
-			return
-		}
-		hasRestricted = sa.HasRestrictedSubuserAccess
-		for _, e := range sa.SubuserAccess {
-			allEntries = append(allEntries, subuserAccessEntry{ID: e.ID, PermissionType: e.PermissionType, Scopes: e.Scopes})
-		}
-		if sa.Metadata.NextParams.AfterSubuserID == 0 {
-			break
-		}
-		afterID = sa.Metadata.NextParams.AfterSubuserID
-	}
-
 	if got.FirstName != "" {
 		plan.FirstName = types.StringValue(got.FirstName)
 	} else {
@@ -649,41 +629,71 @@ func (r *SSOTeammateResource) Update(ctx context.Context, req resource.UpdateReq
 		plan.LastName = types.StringNull()
 	}
 	plan.Status = types.StringValue(got.Status)
-	plan.HasRestricted = types.BoolValue(hasRestricted)
+	plan.IsAdmin = types.BoolValue(got.IsAdmin)
 
-	if len(allEntries) > 0 {
-		objs := make([]subuserAccessObject, 0, len(allEntries))
-		for _, e := range allEntries {
-			// Convert int64 ID to String for Terraform state
-			o := subuserAccessObject{ID: types.StringValue(strconv.FormatInt(e.ID, 10)), PermissionType: types.StringValue(e.PermissionType)}
-			if len(e.Scopes) > 0 {
-				setVals := make([]attr.Value, 0, len(e.Scopes))
-				for _, s := range e.Scopes {
-					setVals = append(setVals, types.StringValue(s))
-				}
-				o.Scopes, _ = types.SetValue(types.StringType, setVals)
-			} else {
-				o.Scopes = types.SetNull(types.StringType)
-			}
-			objs = append(objs, o)
+	if got.IsAdmin {
+		// Admin implies all scopes/subuser_access; skip pagination API call
+		plan.HasRestricted = types.BoolValue(false)
+		if plan.Scopes.IsUnknown() {
+			plan.Scopes = scopesSliceToSet(nil)
 		}
-		sv, diags := types.SetValueFrom(ctx, types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}}, objs)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.SubuserAccess = sv
 	} else {
-		plan.SubuserAccess = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{
-			"id": types.StringType, "permission_type": types.StringType, "scopes": types.SetType{ElemType: types.StringType},
-		}})
+		plan.Scopes = scopesSliceToSet(got.Scopes)
+
+		// Fetch subuser access with pagination (only for non-admin)
+		var allEntries []subuserAccessEntry
+		var hasRestricted bool
+		var afterID int64 = 0
+		for {
+			tflog.Debug(ctx, "Post-update GET subuser_access", map[string]any{"username": username, "after_subuser_id": afterID})
+			reqSA := sendgrid.GetRequest(r.client.APIKey, "/v3/teammates/"+username+"/subuser_access", r.client.BaseURL)
+			reqSA.Method = "GET"
+			if reqSA.QueryParams == nil {
+				reqSA.QueryParams = make(map[string]string)
+			}
+			reqSA.QueryParams["limit"] = "100"
+			if afterID > 0 {
+				reqSA.QueryParams["after_subuser_id"] = strconv.FormatInt(afterID, 10)
+			}
+			saResp, err := sendgrid.API(reqSA)
+			if err != nil {
+				resp.Diagnostics.AddError("SendGrid API error (post-update subuser_access)", err.Error())
+				return
+			}
+			if saResp.StatusCode >= 300 {
+				resp.Diagnostics.AddError("Post-update subuser_access read failed", fmt.Sprintf("status=%d body=%s", saResp.StatusCode, saResp.Body))
+				return
+			}
+			var sa teammateSubuserAccessResponse
+			if err := json.Unmarshal([]byte(saResp.Body), &sa); err != nil {
+				resp.Diagnostics.AddError("Parse error (post-update subuser_access)", fmt.Sprintf("unable to parse body: %v", err))
+				return
+			}
+			hasRestricted = sa.HasRestrictedSubuserAccess
+			for _, e := range sa.SubuserAccess {
+				allEntries = append(allEntries, subuserAccessEntry{ID: e.ID, PermissionType: e.PermissionType, Scopes: e.Scopes})
+			}
+			if sa.Metadata.NextParams.AfterSubuserID == 0 {
+				break
+			}
+			afterID = sa.Metadata.NextParams.AfterSubuserID
+		}
+		plan.HasRestricted = types.BoolValue(hasRestricted)
+		planHasSubuserAccess := !plan.SubuserAccess.IsNull() && !plan.SubuserAccess.IsUnknown() && len(plan.SubuserAccess.Elements()) > 0
+		if planHasSubuserAccess {
+			plan.SubuserAccess = subuserAccessEntriesToSet(ctx, allEntries, &resp.Diagnostics)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
 	}
 	plan.ID = types.StringValue(plan.Email.ValueString())
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// Delete removes an SSO Teammate.
+// DELETE /v3/teammates/{username}
+// https://www.twilio.com/docs/sendgrid/api-reference/teammates/delete-teammate
 func (r *SSOTeammateResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	if r.client == nil {
 		resp.Diagnostics.AddError("Not configured", "Provider configuration is missing")
@@ -713,4 +723,55 @@ func (r *SSOTeammateResource) Delete(ctx context.Context, req resource.DeleteReq
 // ImportState allows `terraform import sendgrid_sso_teammate.example <email>`.
 func (r *SSOTeammateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// subuserAccessObjectType returns the types.ObjectType for subuser_access set elements.
+func subuserAccessObjectType() types.ObjectType {
+	return types.ObjectType{AttrTypes: map[string]attr.Type{
+		"id":              types.StringType,
+		"permission_type": types.StringType,
+		"scopes":          types.SetType{ElemType: types.StringType},
+	}}
+}
+
+// subuserAccessEntriesToSet converts API entries to a types.Set for Terraform state.
+// Returns a null set when entries is empty.
+func subuserAccessEntriesToSet(ctx context.Context, entries []subuserAccessEntry, diags *diag.Diagnostics) types.Set {
+	if len(entries) == 0 {
+		return types.SetNull(subuserAccessObjectType())
+	}
+	objs := make([]subuserAccessObject, 0, len(entries))
+	for _, e := range entries {
+		o := subuserAccessObject{
+			ID:             types.StringValue(strconv.FormatInt(e.ID, 10)),
+			PermissionType: types.StringValue(e.PermissionType),
+		}
+		if len(e.Scopes) > 0 {
+			setVals := make([]attr.Value, 0, len(e.Scopes))
+			for _, s := range e.Scopes {
+				setVals = append(setVals, types.StringValue(s))
+			}
+			o.Scopes, _ = types.SetValue(types.StringType, setVals)
+		} else {
+			o.Scopes = types.SetNull(types.StringType)
+		}
+		objs = append(objs, o)
+	}
+	sv, d := types.SetValueFrom(ctx, subuserAccessObjectType(), objs)
+	diags.Append(d...)
+	return sv
+}
+
+// scopesSliceToSet converts a []string of scopes to a types.Set.
+func scopesSliceToSet(scopes []string) types.Set {
+	if len(scopes) == 0 {
+		s, _ := types.SetValue(types.StringType, []attr.Value{})
+		return s
+	}
+	vals := make([]attr.Value, 0, len(scopes))
+	for _, s := range scopes {
+		vals = append(vals, types.StringValue(s))
+	}
+	sv, _ := types.SetValue(types.StringType, vals)
+	return sv
 }

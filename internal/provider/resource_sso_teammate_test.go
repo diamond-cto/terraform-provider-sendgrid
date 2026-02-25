@@ -27,6 +27,8 @@ func buildResourceConfig(email, firstName, lastName string, subuserID string) st
 	if lastName != "" {
 		cfg += "  last_name  = \"" + lastName + "\"\n"
 	}
+	cfg += "  is_admin  = false\n"
+	cfg += "  scopes    = [\"user.account.read\", \"user.profile.read\"]\n"
 	cfg += "  has_restricted_subuser_access = true\n"
 	cfg += "  subuser_access {\n"
 	cfg += "    id              = \"" + subuserID + "\"\n"
@@ -50,6 +52,23 @@ func buildResourceConfig(email, firstName, lastName string, subuserID string) st
 	return cfg
 }
 
+// buildResourceConfigAdmin returns an HCL config for sendgrid_sso_teammate with is_admin = true.
+func buildResourceConfigAdmin(email, firstName, lastName string) string {
+	cfg := "provider \"sendgrid\" {}\n\n"
+	cfg += "resource \"sendgrid_sso_teammate\" \"test\" {\n"
+	cfg += "  email      = \"" + email + "\"\n"
+	if firstName != "" {
+		cfg += "  first_name = \"" + firstName + "\"\n"
+	}
+	if lastName != "" {
+		cfg += "  last_name  = \"" + lastName + "\"\n"
+	}
+	cfg += "  is_admin  = true\n"
+	cfg += "  has_restricted_subuser_access = false\n"
+	cfg += "}\n"
+	return cfg
+}
+
 // buildResourceConfigMultipleSubusers returns an HCL config for sendgrid_sso_teammate with multiple subuser_access entries.
 func buildResourceConfigMultipleSubusers(email, firstName, lastName string, subuserIDs []string) string {
 	cfg := "provider \"sendgrid\" {}\n\n"
@@ -61,6 +80,8 @@ func buildResourceConfigMultipleSubusers(email, firstName, lastName string, subu
 	if lastName != "" {
 		cfg += "  last_name  = \"" + lastName + "\"\n"
 	}
+	cfg += "  is_admin  = false\n"
+	cfg += "  scopes    = [\"user.account.read\", \"user.profile.read\"]\n"
 	cfg += "  has_restricted_subuser_access = true\n"
 
 	// Add multiple subuser_access blocks
@@ -222,6 +243,7 @@ func TestAccResourceSSOTeammate_CRUD_Import(t *testing.T) {
 				Config: cfgCreate,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "email", email),
+					resource.TestCheckResourceAttr(resourceName, "is_admin", "false"),
 					resource.TestMatchResourceAttr(resourceName, "status", regexp.MustCompile(`^(|active|pending)$`)),
 					checkListLenGE(resourceName, "subuser_access", 1, t),
 					logAttr(resourceName, "subuser_access.0.permission_type", t),
@@ -233,6 +255,7 @@ func TestAccResourceSSOTeammate_CRUD_Import(t *testing.T) {
 				Config: cfgUpdate,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "first_name", "Terraform-Updated"),
+					resource.TestCheckResourceAttr(resourceName, "is_admin", "false"),
 					checkListLenGE(resourceName, "subuser_access", 1, t),
 				),
 			},
@@ -329,6 +352,55 @@ func TestAccResourceSSOTeammate_MultipleSubusers(t *testing.T) {
 			{
 				Destroy: true,
 				Config:  cfgReordered,
+			},
+		},
+	})
+}
+
+// TestAccResourceSSOTeammate_Admin tests creating a teammate with is_admin = true.
+func TestAccResourceSSOTeammate_Admin(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC not set; skipping acceptance test")
+	}
+	if os.Getenv("SENDGRID_API_KEY") == "" {
+		t.Skip("SENDGRID_API_KEY not set; skipping acceptance test")
+	}
+
+	rSuffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	email := fmt.Sprintf("terraform-acctest-admin-%s@example.com", rSuffix)
+
+	cfgAdmin := buildResourceConfigAdmin(email, "Admin", "Test")
+	resourceName := "sendgrid_sso_teammate.test"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"sendgrid": providerserver.NewProtocol6WithError(prov.New()),
+		},
+		CheckDestroy: testAccCheckSSOTeammateDestroy(t),
+		Steps: []resource.TestStep{
+			// CREATE as admin
+			{
+				Config: cfgAdmin,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(resourceName, "email", email),
+					resource.TestCheckResourceAttr(resourceName, "is_admin", "true"),
+					resource.TestCheckResourceAttr(resourceName, "has_restricted_subuser_access", "false"),
+				),
+			},
+			// IMPORT & VERIFY
+			{
+				ResourceName:                         resourceName,
+				ImportState:                          true,
+				ImportStateVerify:                    true,
+				ImportStateId:                        email,
+				ImportStateVerifyIdentifierAttribute: "email",
+			},
+			// DESTROY
+			{
+				Destroy: true,
+				Config:  cfgAdmin,
 			},
 		},
 	})
