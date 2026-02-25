@@ -8,35 +8,45 @@ provider "sendgrid" {
 }
 
 ############################
-# Minimal: restricted read‑only on a single Subuser
+# Admin: full main-account access
+############################
+resource "sendgrid_sso_teammate" "admin" {
+  email      = "admin@example.com"
+  first_name = "Admin"
+  last_name  = "User"
+
+  # Grant full admin access to the main account
+  is_admin = true
+
+  has_restricted_subuser_access = false
+}
+
+############################
+# Main-account scopes only (no per-Subuser restrictions)
+# Note: scopes and has_restricted_subuser_access = true are mutually exclusive
 ############################
 resource "sendgrid_sso_teammate" "readonly" {
   email      = "readonly@example.com"
   first_name = "Read"
   last_name  = "Only"
 
-  # Set to true to manage permissions per Subuser
-  has_restricted_subuser_access = true
+  is_admin = false
+  scopes = [
+    "user.account.read",
+    "user.profile.read",
+    "stats.read",
+  ]
 
-  # Access settings for each assigned Subuser
-  subuser_access {
-    id              = "1234567"    # ← Replace with the ID of an existing Subuser (as string)
-    permission_type = "restricted" # "restricted" | "admin"
-    scopes = [                     # For "restricted", list the allowed scopes
-      "messages.read",
-      "stats.read",
-      "user.account.read",
-      "user.username.read",
-      "tracking_settings.read",
-    ]
-  }
+  has_restricted_subuser_access = false
 }
 
 ############################
-# Mixed: multiple Subusers (restricted + admin)
+# Per-Subuser restricted access (without main-account scopes)
 ############################
 resource "sendgrid_sso_teammate" "ops" {
   email = "ops@example.com"
+
+  is_admin = false
 
   has_restricted_subuser_access = true
 
@@ -59,6 +69,10 @@ resource "sendgrid_sso_teammate" "ops" {
 ############################
 # Useful outputs for testing
 ############################
+output "admin_email" {
+  value = sendgrid_sso_teammate.admin.email
+}
+
 output "readonly_email" {
   value = sendgrid_sso_teammate.readonly.email
 }
