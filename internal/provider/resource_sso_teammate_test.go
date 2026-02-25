@@ -28,7 +28,6 @@ func buildResourceConfig(email, firstName, lastName string, subuserID string) st
 		cfg += "  last_name  = \"" + lastName + "\"\n"
 	}
 	cfg += "  is_admin  = false\n"
-	cfg += "  scopes    = [\"user.account.read\", \"user.profile.read\"]\n"
 	cfg += "  has_restricted_subuser_access = true\n"
 	cfg += "  subuser_access {\n"
 	cfg += "    id              = \"" + subuserID + "\"\n"
@@ -81,7 +80,6 @@ func buildResourceConfigMultipleSubusers(email, firstName, lastName string, subu
 		cfg += "  last_name  = \"" + lastName + "\"\n"
 	}
 	cfg += "  is_admin  = false\n"
-	cfg += "  scopes    = [\"user.account.read\", \"user.profile.read\"]\n"
 	cfg += "  has_restricted_subuser_access = true\n"
 
 	// Add multiple subuser_access blocks

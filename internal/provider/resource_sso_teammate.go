@@ -113,7 +113,7 @@ func (r *SSOTeammateResource) Schema(_ context.Context, _ resource.SchemaRequest
 				ElementType:         types.StringType,
 				Optional:            true,
 				Computed:            true,
-				MarkdownDescription: "Main account permission scopes. Only effective when `is_admin = false`. Ignored when `is_admin = true`.",
+				MarkdownDescription: "Main account permission scopes. Only effective when `is_admin = false`. Cannot be combined with `has_restricted_subuser_access = true`.",
 			},
 			"has_restricted_subuser_access": schema.BoolAttribute{
 				Required:            true,

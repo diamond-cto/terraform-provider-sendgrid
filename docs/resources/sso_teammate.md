@@ -37,14 +37,14 @@ resource "sendgrid_sso_teammate" "admin" {
 }
 
 ############################
-# Restricted main-account scopes + per-Subuser access
+# Main-account scopes only (no per-Subuser restrictions)
+# Note: scopes and has_restricted_subuser_access = true are mutually exclusive
 ############################
 resource "sendgrid_sso_teammate" "readonly" {
   email      = "readonly@example.com"
   first_name = "Read"
   last_name  = "Only"
 
-  # Main-account permissions (only effective when is_admin = false)
   is_admin = false
   scopes = [
     "user.account.read",
@@ -52,34 +52,16 @@ resource "sendgrid_sso_teammate" "readonly" {
     "stats.read",
   ]
 
-  # Set to true to manage permissions per Subuser
-  has_restricted_subuser_access = true
-
-  # Access settings for each assigned Subuser
-  subuser_access {
-    id              = "1234567"    # ← Replace with the ID of an existing Subuser (as string)
-    permission_type = "restricted" # "restricted" | "admin"
-    scopes = [                     # For "restricted", list the allowed scopes
-      "messages.read",
-      "stats.read",
-      "user.account.read",
-      "user.username.read",
-      "tracking_settings.read",
-    ]
-  }
+  has_restricted_subuser_access = false
 }
 
 ############################
-# Mixed: multiple Subusers (restricted + admin)
+# Per-Subuser restricted access (without main-account scopes)
 ############################
 resource "sendgrid_sso_teammate" "ops" {
   email = "ops@example.com"
 
   is_admin = false
-  scopes = [
-    "mail.send",
-    "stats.read",
-  ]
 
   has_restricted_subuser_access = true
 
@@ -128,7 +110,7 @@ output "ops_email" {
 - `first_name` (String) Teammate first name.
 - `is_admin` (Boolean) Set true to grant full admin access to the main account. When true, `scopes` is ignored.
 - `last_name` (String) Teammate last name.
-- `scopes` (Set of String) Main account permission scopes. Only effective when `is_admin = false`. Ignored when `is_admin = true`.
+- `scopes` (Set of String) Main account permission scopes. Only effective when `is_admin = false`. Cannot be combined with `has_restricted_subuser_access = true`.
 - `subuser_access` (Block Set) Per‑Subuser access when `has_restricted_subuser_access = true`. For `permission_type = restricted`, `scopes` must list allowed scopes. (see [below for nested schema](#nestedblock--subuser_access))
 
 ### Read-Only
