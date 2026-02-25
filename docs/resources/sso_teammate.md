@@ -23,12 +23,34 @@ provider "sendgrid" {
 }
 
 ############################
-# Minimal: restricted read‑only on a single Subuser
+# Admin: full main-account access
+############################
+resource "sendgrid_sso_teammate" "admin" {
+  email      = "admin@example.com"
+  first_name = "Admin"
+  last_name  = "User"
+
+  # Grant full admin access to the main account
+  is_admin = true
+
+  has_restricted_subuser_access = false
+}
+
+############################
+# Restricted main-account scopes + per-Subuser access
 ############################
 resource "sendgrid_sso_teammate" "readonly" {
   email      = "readonly@example.com"
   first_name = "Read"
   last_name  = "Only"
+
+  # Main-account permissions (only effective when is_admin = false)
+  is_admin = false
+  scopes = [
+    "user.account.read",
+    "user.profile.read",
+    "stats.read",
+  ]
 
   # Set to true to manage permissions per Subuser
   has_restricted_subuser_access = true
@@ -53,6 +75,12 @@ resource "sendgrid_sso_teammate" "readonly" {
 resource "sendgrid_sso_teammate" "ops" {
   email = "ops@example.com"
 
+  is_admin = false
+  scopes = [
+    "mail.send",
+    "stats.read",
+  ]
+
   has_restricted_subuser_access = true
 
   subuser_access {
@@ -74,6 +102,10 @@ resource "sendgrid_sso_teammate" "ops" {
 ############################
 # Useful outputs for testing
 ############################
+output "admin_email" {
+  value = sendgrid_sso_teammate.admin.email
+}
+
 output "readonly_email" {
   value = sendgrid_sso_teammate.readonly.email
 }
@@ -94,7 +126,9 @@ output "ops_email" {
 ### Optional
 
 - `first_name` (String) Teammate first name.
+- `is_admin` (Boolean) Set true to grant full admin access to the main account. When true, `scopes` is ignored.
 - `last_name` (String) Teammate last name.
+- `scopes` (Set of String) Main account permission scopes. Only effective when `is_admin = false`. Ignored when `is_admin = true`.
 - `subuser_access` (Block Set) Per‑Subuser access when `has_restricted_subuser_access = true`. For `permission_type = restricted`, `scopes` must list allowed scopes. (see [below for nested schema](#nestedblock--subuser_access))
 
 ### Read-Only
