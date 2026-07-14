@@ -59,6 +59,7 @@ func (p *SendGridProvider) DataSources(_ context.Context) []func() datasource.Da
 func (p *SendGridProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewSSOTeammateResource,
+		NewSubuserResource,
 	}
 }
 
